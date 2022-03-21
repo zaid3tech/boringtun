@@ -164,9 +164,7 @@ impl Device {
         for (_k, p) in self.peers.iter() {
             if let Some(time) = p.time_since_last_handshake().map(|t| t.as_secs()) {
                 println!("Time sec {}",time);
-                // if time.as_secs() <= 120 {
-                //     counter = counter + 1;
-                // }
+               counter = counter + 1;
             }
         }
         counter

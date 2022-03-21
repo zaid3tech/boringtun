@@ -302,11 +302,16 @@ impl Device {
             // Completely remove a peer
             return self.remove_peer(&pub_key);
         }
-
+        println!("replace Ip {}",_replace_ips);
         // Update an existing peer
         if self.peers.get(&pub_key).is_some() {
             // We already have a peer, we need to merge the existing config into the newly created one
-            panic!("Modifying existing peers is not yet supported. Remove and add again instead.");
+            for AllowedIP { addr, cidr } in allowed_ips {
+                self.peers_by_ip
+                    .insert(*addr, *cidr as _, Arc::clone(&self.peers.get(&pub_key).unwrap()));
+            }
+            
+            //panic!("Modifying existing peers is not yet supported. Remove and add again instead.");
         }
 
         let next_index = self.next_index();

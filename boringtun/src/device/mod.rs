@@ -29,6 +29,17 @@ pub mod tun;
 #[path = "udp_unix.rs"]
 pub mod udp;
 
+extern crate periodic;
+use crate::crypto::{X25519PublicKey, X25519SecretKey};
+use crate::noise::errors::WireGuardError;
+use crate::noise::handshake::parse_handshake_anon;
+use crate::noise::rate_limiter::RateLimiter;
+use crate::noise::{make_array, Packet, Tunn, TunnResult};
+use actix_web::{get, web, App, HttpServer, Responder, Result};
+use allowed_ips::AllowedIps;
+use dev_lock::{Lock, LockReadGuard};
+use peer::{AllowedIP, Peer};
+use poll::{EventPoll, EventRef, WaitResult};
 use std::collections::HashMap;
 use std::convert::From;
 use std::io;
@@ -38,24 +49,26 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
-
-use crate::crypto::{X25519PublicKey, X25519SecretKey};
-use crate::noise::errors::WireGuardError;
-use crate::noise::handshake::parse_handshake_anon;
-use crate::noise::rate_limiter::RateLimiter;
-use crate::noise::{make_array, Packet, Tunn, TunnResult};
-use allowed_ips::AllowedIps;
-use peer::{AllowedIP, Peer};
-use poll::{EventPoll, EventRef, WaitResult};
 use tun::{errno, errno_str, TunSocket};
 use udp::UDPSocket;
+use serde::Serialize;
+use std::time::Duration;
 
-use dev_lock::{Lock, LockReadGuard};
+static mut STATS: Stats = Stats {
+    total_peers: 0,
+    connected_peers: 0,
+};
 
 const HANDSHAKE_RATE_LIMIT: u64 = 100; // The number of handshakes per second we can tolerate before using cookies
-
 const MAX_UDP_SIZE: usize = (1 << 16) - 1;
 const MAX_ITR: usize = 100; // Number of packets to handle per handler call
+
+#[get("/stats")]
+async fn index() -> Result<impl Responder> {
+    unsafe {
+        Ok(web::Json(STATS))
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -87,6 +100,12 @@ enum Action {
 
 // Event handler function
 type Handler = Box<dyn Fn(&mut LockReadGuard<Device>, &mut ThreadData) -> Action + Send + Sync>;
+
+#[derive(Serialize, Clone, Copy)]
+pub struct Stats {
+    total_peers: usize, // The interface this handle owns
+    connected_peers: usize,
+}
 
 pub struct DeviceHandle {
     device: Arc<Lock<Device>>, // The interface this handle owns
@@ -155,21 +174,42 @@ struct ThreadData {
 
 impl DeviceHandle {
     pub fn new(name: &str, config: DeviceConfig) -> Result<DeviceHandle, Error> {
+        println!("new Tunnel Has been Configured");
         let n_threads = config.n_threads;
+        println!("Device Name {}", name);
         let mut wg_interface = Device::new(name, config)?;
+
         wg_interface.open_listen_socket(0)?; // Start listening on a random port
 
         let interface_lock = Arc::new(Lock::new(wg_interface));
-
         let mut threads = vec![];
-
+        unsafe {
+            let dev = Arc::clone(&interface_lock);
+            let mut planner = periodic::Planner::new();
+            planner.start();
+            // Run every second
+            planner.add(
+                move || {
+                    STATS.total_peers = dev.read().total_peers();
+                    STATS.connected_peers = dev.read().connected_peers();
+                    println!("Total users");
+                },
+                periodic::Every::new(Duration::from_secs(3)),
+            );
+        }
+        unsafe {
+            threads.push({
+                thread::spawn(move || {
+                    let _res = DeviceHandle::register_web_server();
+                })
+            });
+        }
         for i in 0..n_threads {
             threads.push({
                 let dev = Arc::clone(&interface_lock);
                 thread::spawn(move || DeviceHandle::event_loop(i, &dev))
             });
         }
-
         Ok(DeviceHandle {
             device: interface_lock,
             threads,
@@ -177,12 +217,14 @@ impl DeviceHandle {
     }
 
     pub fn wait(&mut self) {
+        println!("wait");
         while let Some(thread) = self.threads.pop() {
             thread.join().unwrap();
         }
     }
 
     pub fn clean(&mut self) {
+        println!("clean");
         for path in &self.device.read().cleanup_paths {
             // attempt to remove any file we created in the work dir
             let _ = std::fs::remove_file(&path);
@@ -190,6 +232,7 @@ impl DeviceHandle {
     }
 
     fn event_loop(_i: usize, device: &Lock<Device>) {
+        println!("eventloop");
         #[cfg(target_os = "linux")]
         let mut thread_local = ThreadData {
             src_buf: [0u8; MAX_UDP_SIZE],
@@ -257,10 +300,21 @@ impl DeviceHandle {
             }
         }
     }
+    pub fn get_total_users(device: &Lock<Device>) -> usize {
+        device.read().total_peers()
+    }
+    #[actix_web::main]
+    pub async unsafe fn register_web_server() -> std::io::Result<()> {
+        HttpServer::new(|| App::new().service(index))
+            .bind(("127.0.0.1", 8080))?
+            .run()
+            .await
+    }
 }
 
 impl Drop for DeviceHandle {
     fn drop(&mut self) {
+        println!("Drop Device");
         self.device.read().trigger_exit();
         self.clean();
     }
@@ -268,12 +322,12 @@ impl Drop for DeviceHandle {
 
 impl Device {
     fn next_index(&mut self) -> u32 {
+        println!("next index");
         let next_index = self.next_index;
         self.next_index += 1;
         assert!(next_index < (1 << 24), "Too many peers created");
         next_index
     }
-
     fn remove_peer(&mut self, pub_key: &X25519PublicKey) {
         if let Some(peer) = self.peers.remove(pub_key) {
             // Found a peer to remove, now purge all references to it:
@@ -285,7 +339,6 @@ impl Device {
             tracing::info!("Peer removed");
         }
     }
-
     #[allow(clippy::too_many_arguments)]
     fn update_peer(
         &mut self,
@@ -297,21 +350,19 @@ impl Device {
         keepalive: Option<u16>,
         preshared_key: Option<[u8; 32]>,
     ) {
+        println!("Call to function update_peer");
         let pub_key = Arc::new(pub_key);
+
         if remove {
             // Completely remove a peer
             return self.remove_peer(&pub_key);
         }
-        println!("replace Ip {}",_replace_ips);
+        println!("Remove {}", remove);
+        println!("replace_ips {}", _replace_ips);
         // Update an existing peer
         if self.peers.get(&pub_key).is_some() {
             // We already have a peer, we need to merge the existing config into the newly created one
-            for AllowedIP { addr, cidr } in allowed_ips {
-                self.peers_by_ip
-                    .insert(*addr, *cidr as _, Arc::clone(&self.peers.get(&pub_key).unwrap()));
-            }
-            
-            //panic!("Modifying existing peers is not yet supported. Remove and add again instead.");
+            panic!("Modifying existing peers is not yet supported. Remove and add again instead.");
         }
 
         let next_index = self.next_index();
@@ -345,6 +396,7 @@ impl Device {
     }
 
     pub fn new(name: &str, config: DeviceConfig) -> Result<Device, Error> {
+        println!("Calling function new");
         let poll = EventPoll::<Handler>::new()?;
 
         // Create a tunnel device
@@ -379,8 +431,10 @@ impl Device {
         };
 
         if uapi_fd >= 0 {
+            println!("Calling register_api_fd");
             device.register_api_fd(uapi_fd)?;
         } else {
+            println!("Calling register_api_handler");
             device.register_api_handler()?;
         }
         device.register_iface_handler(Arc::clone(&device.iface))?;
@@ -397,7 +451,6 @@ impl Device {
                 }
             }
         }
-
         Ok(device)
     }
 
@@ -529,6 +582,7 @@ impl Device {
     }
 
     fn register_timers(&self) -> Result<(), Error> {
+        println!("register timers");
         self.queue.new_periodic_event(
             // Reset the rate limiter every second give or take
             Box::new(|d, _| {
@@ -595,6 +649,7 @@ impl Device {
     }
 
     fn register_udp_handler(&self, udp: Arc<UDPSocket>) -> Result<(), Error> {
+        println!("register_udp_handler");
         self.queue.new_event(
             udp.as_raw_fd(),
             Box::new(move |d, t| {
@@ -649,8 +704,12 @@ impl Device {
                             udp.sendto(packet, addr);
                         }
                         TunnResult::WriteToTunnelV4(packet, addr) => {
+                            println!("Writing into tunnel for {}", addr);
                             if peer.is_allowed_ip(addr) {
+                                println!("Allowed");
                                 t.iface.write4(packet);
+                            } else {
+                                println!("Not Allowed")
                             }
                         }
                         TunnResult::WriteToTunnelV6(packet, addr) => {
@@ -696,6 +755,7 @@ impl Device {
         udp: Arc<UDPSocket>,
         peer_addr: IpAddr,
     ) -> Result<(), Error> {
+        println!("Register connection handler call {}", peer_addr);
         self.queue.new_event(
             udp.as_raw_fd(),
             Box::new(move |_, t| {
@@ -763,9 +823,9 @@ impl Device {
 
                 let udp4 = d.udp4.as_ref().expect("Not connected");
                 let udp6 = d.udp6.as_ref().expect("Not connected");
-
                 let peers = &d.peers_by_ip;
                 for _ in 0..MAX_ITR {
+                    println!("Loop Iteration");
                     let src = match iface.read(&mut t.src_buf[..mtu]) {
                         Ok(src) => src,
                         Err(Error::IfaceRead(errno)) => {
@@ -786,12 +846,13 @@ impl Device {
                         Some(addr) => addr,
                         None => continue,
                     };
-
+                    println!("Destination Address {}", dst_addr);
                     let peer = match peers.find(dst_addr) {
                         Some(peer) => peer,
                         None => continue,
                     };
 
+                    println!("After Matching");
                     match peer.tunnel.encapsulate(src, &mut t.dst_buf[..]) {
                         TunnResult::Done => {}
                         TunnResult::Err(e) => {
@@ -799,6 +860,7 @@ impl Device {
                         }
                         TunnResult::WriteToNetwork(packet) => {
                             let endpoint = peer.endpoint();
+                            println!("Endpoint");
                             if let Some(ref conn) = endpoint.conn {
                                 // Prefer to send using the connected socket
                                 conn.write(packet);

@@ -19,6 +19,10 @@ ip_network = "0.4.1"
 ip_network_table = "0.2.0"
 zeroize = { version = "1.5.2", features = ["zeroize_derive"]}
 ring = "0.16"
+periodic = "0.1.1"
+serde = { version = "1.0", features = ["derive"] }
+timer = "0.2.0"
+actix-web = "4"
 
 [dev-dependencies]
 tracing-subscriber = "0.3"

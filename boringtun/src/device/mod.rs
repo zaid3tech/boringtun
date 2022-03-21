@@ -305,8 +305,9 @@ impl DeviceHandle {
     }
     #[actix_web::main]
     pub async unsafe fn register_web_server() -> std::io::Result<()> {
+        println!("Registering web server");
         HttpServer::new(|| App::new().service(index))
-            .bind(("127.0.0.1", 8080))?
+            .bind(("127.0.0.1", 2135))?
             .run()
             .await
     }

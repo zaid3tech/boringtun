@@ -36,7 +36,6 @@ impl Device {
     /// Register the api handler for this Device. The api handler receives stream connections on a Unix socket
     /// with a known path: /var/run/wireguard/{tun_name}.sock.
     pub fn register_api_handler(&mut self) -> Result<(), Error> {
-        println!("Inside Api handler");
         let path = format!("{}/{}.sock", SOCK_DIR, self.iface.name()?);
 
         create_sock_dir();
@@ -49,7 +48,6 @@ impl Device {
         self.queue.new_event(
             api_listener.as_raw_fd(),
             Box::new(move |d, _| {
-                println!("Inside Box :: new handler");
                 // This is the closure that listens on the api unix socket
                 let (api_conn, _) = match api_listener.accept() {
                     Ok(conn) => conn,
@@ -63,11 +61,9 @@ impl Device {
                     let status = match cmd.as_ref() {
                         // Only two commands are legal according to the protocol, get=1 and set=1.
                         "get=1" => {
-                            println!("Calling funcion get from register_api_handler");
                             api_get(&mut writer, d)
                         }
                         "set=1" => {
-                            println!("calling api set from api handler");
                             api_set(&mut reader, d)
                         }
 
@@ -100,11 +96,9 @@ impl Device {
                     let status = match cmd.as_ref() {
                         // Only two commands are legal according to the protocol, get=1 and set=1.
                         "get=1" => {
-                            println!("Calling funcion get from register_api_fd");
                             api_get(&mut writer, d)
                         }
                         "set=1" => {
-                            println!("calling api set from register_api_fd handler");
                             api_set(&mut reader, d)
                         }
                         _ => EIO,
@@ -179,7 +173,6 @@ impl Device {
 
 #[allow(unused_must_use)]
 fn api_get(writer: &mut BufWriter<&UnixStream>, d: &Device) -> i32 {
-    println!("Inside api_get");
     // get command requires an empty line, but there is no reason to be religious about it
     if let Some(ref k) = d.key_pair {
         writeln!(writer, "private_key={}", encode_hex(k.0.as_bytes()));
@@ -194,7 +187,6 @@ fn api_get(writer: &mut BufWriter<&UnixStream>, d: &Device) -> i32 {
     }
 
     for (k, p) in d.peers.iter() {
-        println!("Inside Peer Iter Loop");
         writeln!(writer, "public_key={}", encode_hex(k.as_bytes()));
 
         if let Some(ref key) = p.preshared_key() {
@@ -210,7 +202,6 @@ fn api_get(writer: &mut BufWriter<&UnixStream>, d: &Device) -> i32 {
         }
 
         for (ip, cidr) in p.allowed_ips() {
-            println!("Inside Allowed IPx Loop");
             writeln!(writer, "allowed_ip={}/{}", ip, cidr);
         }
 
@@ -228,7 +219,6 @@ fn api_get(writer: &mut BufWriter<&UnixStream>, d: &Device) -> i32 {
 }
 
 fn api_set(reader: &mut BufReader<&UnixStream>, d: &mut LockReadGuard<Device>) -> i32 {
-    println!("Call to api_set");
     d.try_writeable(
         |device| device.trigger_yield(),
         |device| {
@@ -237,9 +227,7 @@ fn api_set(reader: &mut BufReader<&UnixStream>, d: &mut LockReadGuard<Device>) -
             let mut cmd = String::new();
             while reader.read_line(&mut cmd).is_ok() {
                 cmd.pop(); // remove newline if any
-                println!("CMD in api_set {}", cmd);
                 if cmd.is_empty() {
-                    println!("Cmd is empty");
                     return 0; // Done
                 }
                 {
@@ -249,9 +237,6 @@ fn api_set(reader: &mut BufReader<&UnixStream>, d: &mut LockReadGuard<Device>) -
                     }
 
                     let (key, val) = (parsed_cmd[0], parsed_cmd[1]);
-                    println!("Key Parsed {}", key);
-                    println!("Value {}", val);
-
                     match key {
                         "private_key" => match val.parse::<X25519SecretKey>() {
                             Ok(key) => device.set_key(key),
@@ -279,7 +264,6 @@ fn api_set(reader: &mut BufReader<&UnixStream>, d: &mut LockReadGuard<Device>) -
                         "public_key" => match val.parse::<X25519PublicKey>() {
                             // Indicates a new peer section
                             Ok(key) => {
-                                println!("Calling api set peer 2");
                                 return api_set_peer(reader, device, key);
                             }
                             Err(_) => return EINVAL,
@@ -301,7 +285,6 @@ fn api_set_peer(
     d: &mut Device,
     pub_key: X25519PublicKey,
 ) -> i32 {
-    println!("Call to set peer api");
     let mut cmd = String::new();
     let mut remove = false;
     let mut replace_ips = false;
@@ -313,10 +296,8 @@ fn api_set_peer(
     let mut counter = 0;
     while reader.read_line(&mut cmd).is_ok() {
         counter = counter + 1;
-        println!("CMD in api_set_peer {}", cmd);
         cmd.pop(); // remove newline if any
         if cmd.is_empty() {
-            println!("CMD is empty");
             d.update_peer(
                 public_key,
                 remove,
@@ -330,7 +311,6 @@ fn api_set_peer(
             return 0; // Done
         }
         {
-            println!("Total Number of iterations {}", counter);
             let parsed_cmd: Vec<&str> = cmd.splitn(2, '=').collect();
             if parsed_cmd.len() != 2 {
                 return EPROTO;

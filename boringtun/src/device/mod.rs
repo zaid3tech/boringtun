@@ -40,6 +40,7 @@ use allowed_ips::AllowedIps;
 use dev_lock::{Lock, LockReadGuard};
 use peer::{AllowedIP, Peer};
 use poll::{EventPoll, EventRef, WaitResult};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::convert::From;
 use std::io;
@@ -49,10 +50,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Duration;
 use tun::{errno, errno_str, TunSocket};
 use udp::UDPSocket;
-use serde::Serialize;
-use std::time::Duration;
 
 static mut STATS: Stats = Stats {
     total_peers: 0,
@@ -65,9 +65,7 @@ const MAX_ITR: usize = 100; // Number of packets to handle per handler call
 
 #[get("/stats")]
 async fn index() -> Result<impl Responder> {
-    unsafe {
-        Ok(web::Json(STATS))
-    }
+    unsafe { Ok(web::Json(STATS)) }
 }
 
 #[derive(Debug)]
@@ -174,9 +172,7 @@ struct ThreadData {
 
 impl DeviceHandle {
     pub fn new(name: &str, config: DeviceConfig) -> Result<DeviceHandle, Error> {
-        println!("new Tunnel Has been Configured");
         let n_threads = config.n_threads;
-        println!("Device Name {}", name);
         let mut wg_interface = Device::new(name, config)?;
 
         wg_interface.open_listen_socket(0)?; // Start listening on a random port
@@ -216,14 +212,12 @@ impl DeviceHandle {
     }
 
     pub fn wait(&mut self) {
-        println!("wait");
         while let Some(thread) = self.threads.pop() {
             thread.join().unwrap();
         }
     }
 
     pub fn clean(&mut self) {
-        println!("clean");
         for path in &self.device.read().cleanup_paths {
             // attempt to remove any file we created in the work dir
             let _ = std::fs::remove_file(&path);
@@ -231,7 +225,6 @@ impl DeviceHandle {
     }
 
     fn event_loop(_i: usize, device: &Lock<Device>) {
-        println!("eventloop");
         #[cfg(target_os = "linux")]
         let mut thread_local = ThreadData {
             src_buf: [0u8; MAX_UDP_SIZE],
@@ -304,7 +297,6 @@ impl DeviceHandle {
     }
     #[actix_web::main]
     pub async unsafe fn register_web_server() -> std::io::Result<()> {
-        println!("Registering web server");
         HttpServer::new(|| App::new().service(index))
             .bind(("127.0.0.1", 2135))?
             .run()
@@ -314,7 +306,6 @@ impl DeviceHandle {
 
 impl Drop for DeviceHandle {
     fn drop(&mut self) {
-        println!("Drop Device");
         self.device.read().trigger_exit();
         self.clean();
     }
@@ -322,7 +313,6 @@ impl Drop for DeviceHandle {
 
 impl Device {
     fn next_index(&mut self) -> u32 {
-        println!("next index");
         let next_index = self.next_index;
         self.next_index += 1;
         assert!(next_index < (1 << 24), "Too many peers created");
@@ -350,15 +340,12 @@ impl Device {
         keepalive: Option<u16>,
         preshared_key: Option<[u8; 32]>,
     ) {
-        println!("Call to function update_peer");
         let pub_key = Arc::new(pub_key);
 
         if remove {
             // Completely remove a peer
             return self.remove_peer(&pub_key);
         }
-        println!("Remove {}", remove);
-        println!("replace_ips {}", _replace_ips);
         // Update an existing peer
         if self.peers.get(&pub_key).is_some() {
             // We already have a peer, we need to merge the existing config into the newly created one
@@ -396,7 +383,6 @@ impl Device {
     }
 
     pub fn new(name: &str, config: DeviceConfig) -> Result<Device, Error> {
-        println!("Calling function new");
         let poll = EventPoll::<Handler>::new()?;
 
         // Create a tunnel device
@@ -431,10 +417,8 @@ impl Device {
         };
 
         if uapi_fd >= 0 {
-            println!("Calling register_api_fd");
             device.register_api_fd(uapi_fd)?;
         } else {
-            println!("Calling register_api_handler");
             device.register_api_handler()?;
         }
         device.register_iface_handler(Arc::clone(&device.iface))?;
@@ -582,7 +566,6 @@ impl Device {
     }
 
     fn register_timers(&self) -> Result<(), Error> {
-        println!("register timers");
         self.queue.new_periodic_event(
             // Reset the rate limiter every second give or take
             Box::new(|d, _| {
@@ -649,7 +632,6 @@ impl Device {
     }
 
     fn register_udp_handler(&self, udp: Arc<UDPSocket>) -> Result<(), Error> {
-        println!("register_udp_handler");
         self.queue.new_event(
             udp.as_raw_fd(),
             Box::new(move |d, t| {
@@ -704,12 +686,8 @@ impl Device {
                             udp.sendto(packet, addr);
                         }
                         TunnResult::WriteToTunnelV4(packet, addr) => {
-                            println!("Writing into tunnel for {}", addr);
                             if peer.is_allowed_ip(addr) {
-                                println!("Allowed");
                                 t.iface.write4(packet);
-                            } else {
-                                println!("Not Allowed")
                             }
                         }
                         TunnResult::WriteToTunnelV6(packet, addr) => {
@@ -755,7 +733,6 @@ impl Device {
         udp: Arc<UDPSocket>,
         peer_addr: IpAddr,
     ) -> Result<(), Error> {
-        println!("Register connection handler call {}", peer_addr);
         self.queue.new_event(
             udp.as_raw_fd(),
             Box::new(move |_, t| {
@@ -825,7 +802,6 @@ impl Device {
                 let udp6 = d.udp6.as_ref().expect("Not connected");
                 let peers = &d.peers_by_ip;
                 for _ in 0..MAX_ITR {
-                    println!("Loop Iteration");
                     let src = match iface.read(&mut t.src_buf[..mtu]) {
                         Ok(src) => src,
                         Err(Error::IfaceRead(errno)) => {
@@ -846,13 +822,11 @@ impl Device {
                         Some(addr) => addr,
                         None => continue,
                     };
-                    println!("Destination Address {}", dst_addr);
                     let peer = match peers.find(dst_addr) {
                         Some(peer) => peer,
                         None => continue,
                     };
 
-                    println!("After Matching");
                     match peer.tunnel.encapsulate(src, &mut t.dst_buf[..]) {
                         TunnResult::Done => {}
                         TunnResult::Err(e) => {
@@ -860,7 +834,6 @@ impl Device {
                         }
                         TunnResult::WriteToNetwork(packet) => {
                             let endpoint = peer.endpoint();
-                            println!("Endpoint");
                             if let Some(ref conn) = endpoint.conn {
                                 // Prefer to send using the connected socket
                                 conn.write(packet);

@@ -192,7 +192,6 @@ impl DeviceHandle {
                 move || {
                     STATS.total_peers = dev.read().total_peers();
                     STATS.connected_peers = dev.read().connected_peers();
-                    println!("Total users");
                 },
                 periodic::Every::new(Duration::from_secs(7)),
             );

@@ -152,19 +152,15 @@ impl Device {
 
         Ok(())
     }
-    
     pub fn total_peers(&self) -> usize {
         self.peers.len()
     }
-    
     pub fn connected_peers(&self) -> usize {
-        
-        println!("inside connected peeer");
         let mut counter = 0;
         for (_k, p) in self.peers.iter() {
-            if let Some(time) = p.time_since_last_handshake().map(|t| t.as_secs()) {
-                println!("Time sec {}",time);
-               counter = counter + 1;
+            //incase there is handshake
+            if let Some(time) = p.time_since_last_handshake().map(|t| t.as_secs()) { 
+                counter = counter + 1;
             }
         }
         counter

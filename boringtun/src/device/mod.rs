@@ -194,7 +194,7 @@ impl DeviceHandle {
                     STATS.connected_peers = dev.read().connected_peers();
                     println!("Total users");
                 },
-                periodic::Every::new(Duration::from_secs(3)),
+                periodic::Every::new(Duration::from_secs(7)),
             );
         }
         unsafe {

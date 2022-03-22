@@ -159,7 +159,7 @@ impl Device {
         let mut counter = 0;
         for (_k, p) in self.peers.iter() {
             //incase there is handshake
-            if let Some(time) = p.time_since_last_handshake().map(|t| t.as_secs()) { 
+            if let Some(_time) = p.time_since_last_handshake().map(|t| t.as_secs()) { 
                 counter = counter + 1;
             }
         }

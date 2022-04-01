@@ -117,9 +117,13 @@ fn main() {
             .with_writer(non_blocking)
             .with_ansi(false)
             .init();
-
+        
+        let stderr = File::create("/tmp/boringtun.err").unwrap();
+        let stdout = File::create("/tmp/boringtunstd.out").unwrap();
         let daemonize = Daemonize::new()
             .working_directory("/tmp")
+            .stdout(stdout)
+            .stderr(stderr)
             .exit_action(move || {
                 let mut b = [0u8; 1];
                 if sock2.recv(&mut b).is_ok() && b[0] == 1 {
